@@ -59,6 +59,10 @@ config BR2_GCC_VERSION_12_X
 	depends on !BR2_archs4x_rel31
 	select BR2_TOOLCHAIN_GCC_AT_LEAST_12
 
+config BR2_GCC_VERSION_13_X
+	bool "gcc 13.x"
+	select BR2_TOOLCHAIN_GCC_AT_LEAST_13
+
 endchoice
 
 # libcilkrts was introduced in gcc 4.9 and removed in gcc 8.x
@@ -89,6 +93,7 @@ config BR2_GCC_VERSION
 	default "10.4.0"    if BR2_GCC_VERSION_10_X
 	default "11.4.0"    if BR2_GCC_VERSION_11_X
 	default "12.3.0"    if BR2_GCC_VERSION_12_X
+	default "13.1.0"    if BR2_GCC_VERSION_13_X
 	default "arc-2020.09-release" if BR2_GCC_VERSION_ARC
 
 config BR2_EXTRA_GCC_CONFIG_OPTIONS
