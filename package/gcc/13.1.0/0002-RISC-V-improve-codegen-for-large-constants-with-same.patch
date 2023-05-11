@@ -1,0 +1,71 @@
+From e7488f33c9e5e0889277a80f4afa311475258e8c Mon Sep 17 00:00:00 2001
+From: Vineet Gupta <vineetg@rivosinc.com>
+Date: Tue, 9 May 2023 16:22:08 -0700
+Subject: [PATCH] RISC-V: improve codegen for large constants with same 32-bit
+ lo and hi parts [2]
+
+[part #2 of PR/109279]
+
+SPEC2017 deepsjeng uses large constants which currently generates less than
+ideal code. This fix improves codegen for large constants which have
+same low and hi parts: e.g.
+
+	long long f(void) { return 0x0101010101010101ull; }
+
+Before
+        li      a5,0x1010000
+        addi    a5,a5,0x101
+        mv      a0,a5
+        slli    a5,a5,32
+        add     a0,a5,a0
+        ret
+
+With patch
+	li	a5,0x1010000
+	addi	a5,a5,0x101
+	slli	a0,a5,32
+	add	a0,a0,a5
+	ret
+
+This is testsuite clean.
+
+gcc/ChangeLog:
+
+	* config/riscv/riscv.cc (riscv_split_integer): if loval is equal
+	to hival, ASHIFT the corresponding regs.
+
+Signed-off-by: Vineet Gupta <vineetg@rivosinc.com>
+---
+ gcc/config/riscv/riscv.cc | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+diff --git a/gcc/config/riscv/riscv.cc b/gcc/config/riscv/riscv.cc
+index 3b95c16bcdba..9f71f45aab17 100644
+--- a/gcc/config/riscv/riscv.cc
++++ b/gcc/config/riscv/riscv.cc
+@@ -703,13 +703,18 @@ riscv_split_integer (HOST_WIDE_INT val, machine_mode mode)
+   unsigned HOST_WIDE_INT hival = sext_hwi ((val - loval) >> 32, 32);
+   rtx hi = gen_reg_rtx (mode), lo = gen_reg_rtx (mode);
+ 
+-  riscv_move_integer (hi, hi, hival, mode);
+   riscv_move_integer (lo, lo, loval, mode);
+ 
+-  hi = gen_rtx_fmt_ee (ASHIFT, mode, hi, GEN_INT (32));
+-  hi = force_reg (mode, hi);
++  if (loval == hival)
++      hi = gen_rtx_ASHIFT (mode, lo, GEN_INT (32));
++  else
++    {
++      riscv_move_integer (hi, hi, hival, mode);
++      hi = gen_rtx_ASHIFT (mode, hi, GEN_INT (32));
++    }
+ 
+-  return gen_rtx_fmt_ee (PLUS, mode, hi, lo);
++  hi = force_reg (mode, hi);
++  return gen_rtx_PLUS (mode, hi, lo);
+ }
+ 
+ /* Return true if X is a thread-local symbol.  */
+-- 
+2.34.1
+

@@ -1,0 +1,322 @@
+From cf606f2fd7ae81055e42681a0e0e3f422a4bf0be Mon Sep 17 00:00:00 2001
+From: Vineet Gupta <vineetg@rivosinc.com>
+Date: Tue, 11 Apr 2023 14:05:29 -0700
+Subject: [PATCH 1/2] riscv: relax splitter restrictions for creating pseudos
+
+[partial addressing of PR/109279]
+
+RISCV splitters have restrictions to not create pesudos due to a combine
+limitatation. And despite this being a split-during-combine limitation,
+all split passes take the hit due to way define*_split are used in gcc.
+
+With the original combine issue being fixed 61bee6aed2 ("combine: Don't
+record for UNDO_MODE pointers into regno_reg_rtx array [PR104985]")
+the RV splitters can now be relaxed.
+
+This improves the codegen in general. e.g.
+
+	long long f(void) { return 0x0101010101010101ull; }
+
+Before
+
+	li	a0,0x01010000
+	addi	a0,0x0101
+	slli	a0,a0,16
+	addi	a0,a0,0x0101
+	slli	a0,a0,16
+	addi	a0,a0,0x0101
+	ret
+
+With patch
+
+	li	a5,0x01010000
+	addi	a5,a5,0x0101
+	mv	a0,a5
+	slli	a5,a5,32
+	add	a0,a5,a0
+	ret
+
+This reduces the qemu icounts, even if slightly, across SPEC2017.
+
+500.perlbench_r	0	1235310737733	1231742384460	0.29%
+		1	744489708820	743515759958
+		2	714072106766	712875768625	0.17%
+502.gcc_r	0	197365353269	197178223030
+		1	235614445254	235465240341
+		2	226769189971	226604663947
+		3	188315686133	188123584015
+		4	289372107644	289187945424
+503.bwaves_r	0	326291538768	326291539697
+		1	515809487294	515809488863
+		2	401647004144	401647005463
+		3	488750661035	488750662484
+505.mcf_r	0	681926695281	681925418147
+507.cactuBSSN_r	0	3832240965352	3832226068734
+508.namd_r	0	1919838790866	1919832527292
+510.parest_r	0	3515999635520	3515878553435
+511.povray_r	0	3073889223775	3074758622749
+519.lbm_r	0	1194077464296	1194077464041
+520.omnetpp_r	0	1014144252460	1011530791131	0.26%
+521.wrf_r	0	3966715533120	3966265425092
+523.xalancbmk_r	0	1064914296949	1064506711802
+525.x264_r	0	509290028335	509258131632
+		1	2001424246635	2001677767181
+		2	1914660798226	1914869407575
+526.blender_r	0	1726083839515	1725974286174
+527.cam4_r	0	2336526136415	2333656336419
+531.deepsjeng_r	0	1689007489539	1686541299243	0.15%
+538.imagick_r	0	3247960667520	3247942048723
+541.leela_r	0	2072315300365	2070248271250
+544.nab_r	0	1527909091282	1527906483039
+548.exchange2_r	0	2086120304280	2086314757502
+549.fotonik3d_r	0	2261694058444	2261670330720
+554.roms_r	0	2640547903140	2640512733483
+557.xz_r	0	388736881767	386880875636	0.48%
+		1	959356981818	959993132842
+		2	547643353034	546374038310	0.23%
+997.specrand_fr	0	512881578	512599641
+999.specrand_ir	0	512881578	512599641
+
+This is testsuite clean, no regression w/ patch.
+
+               ========= Summary of gcc testsuite =========
+                            | # of unexpected case / # of unique unexpected case
+                            |          gcc |          g++ |     gfortran |
+ rv64imafdc/  lp64d/ medlow |    2 /     2 |    1 /     1 |    6 /     1 |
+   rv64imac/   lp64/ medlow |    3 /     3 |    1 /     1 |   43 /     8 |
+ rv32imafdc/ ilp32d/ medlow |    1 /     1 |    3 /     2 |    6 /     1 |
+   rv32imac/  ilp32/ medlow |    1 /     1 |    3 /     2 |   43 /     8 |
+
+This came up as part of IRC chat on PR/109279 and was suggested by
+Andrew Pinski.
+
+gcc/ChangeLog:
+
+	* config/riscv/riscv.md: riscv_move_integer() drop in_splitter arg.
+	riscv_split_symbol() drop in_splitter arg.
+	* config/riscv/riscv.cc: riscv_move_integer() drop in_splitter arg.
+	riscv_split_symbol() drop in_splitter arg.
+	riscv_force_temporary() drop in_splitter arg.
+	* config/riscv/riscv-protos.h: riscv_move_integer() drop in_splitter arg.
+	riscv_split_symbol() drop in_splitter arg.
+
+Signed-off-by: Vineet Gupta <vineetg@rivosinc.com>
+---
+ gcc/config/riscv/riscv-protos.h |  4 +--
+ gcc/config/riscv/riscv.cc       | 46 +++++++++++++--------------------
+ gcc/config/riscv/riscv.md       |  8 +++---
+ 3 files changed, 24 insertions(+), 34 deletions(-)
+
+diff --git a/gcc/config/riscv/riscv-protos.h b/gcc/config/riscv/riscv-protos.h
+index 5244e8dcbf0a..607ff6ea697b 100644
+--- a/gcc/config/riscv/riscv-protos.h
++++ b/gcc/config/riscv/riscv-protos.h
+@@ -44,10 +44,10 @@ extern int riscv_const_insns (rtx);
+ extern int riscv_split_const_insns (rtx);
+ extern int riscv_load_store_insns (rtx, rtx_insn *);
+ extern rtx riscv_emit_move (rtx, rtx);
+-extern bool riscv_split_symbol (rtx, rtx, machine_mode, rtx *, bool);
++extern bool riscv_split_symbol (rtx, rtx, machine_mode, rtx *);
+ extern bool riscv_split_symbol_type (enum riscv_symbol_type);
+ extern rtx riscv_unspec_address (rtx, enum riscv_symbol_type);
+-extern void riscv_move_integer (rtx, rtx, HOST_WIDE_INT, machine_mode, bool);
++extern void riscv_move_integer (rtx, rtx, HOST_WIDE_INT, machine_mode);
+ extern bool riscv_legitimize_move (machine_mode, rtx, rtx);
+ extern rtx riscv_subword (rtx, bool);
+ extern bool riscv_split_64bit_move_p (rtx, rtx);
+diff --git a/gcc/config/riscv/riscv.cc b/gcc/config/riscv/riscv.cc
+index 97e2b08c427d..3b95c16bcdba 100644
+--- a/gcc/config/riscv/riscv.cc
++++ b/gcc/config/riscv/riscv.cc
+@@ -703,8 +703,8 @@ riscv_split_integer (HOST_WIDE_INT val, machine_mode mode)
+   unsigned HOST_WIDE_INT hival = sext_hwi ((val - loval) >> 32, 32);
+   rtx hi = gen_reg_rtx (mode), lo = gen_reg_rtx (mode);
+ 
+-  riscv_move_integer (hi, hi, hival, mode, FALSE);
+-  riscv_move_integer (lo, lo, loval, mode, FALSE);
++  riscv_move_integer (hi, hi, hival, mode);
++  riscv_move_integer (lo, lo, loval, mode);
+ 
+   hi = gen_rtx_fmt_ee (ASHIFT, mode, hi, GEN_INT (32));
+   hi = force_reg (mode, hi);
+@@ -1356,12 +1356,9 @@ riscv_swap_instruction (rtx inst)
+    are allowed, copy it into a new register, otherwise use DEST.  */
+ 
+ static rtx
+-riscv_force_temporary (rtx dest, rtx value, bool in_splitter)
++riscv_force_temporary (rtx dest, rtx value)
+ {
+-  /* We can't call gen_reg_rtx from a splitter, because this might realloc
+-     the regno_reg_rtx array, which would invalidate reg rtx pointers in the
+-     combine undo buffer.  */
+-  if (can_create_pseudo_p () && !in_splitter)
++  if (can_create_pseudo_p ())
+     return force_reg (Pmode, value);
+   else
+     {
+@@ -1420,7 +1417,7 @@ static rtx
+ riscv_unspec_offset_high (rtx temp, rtx addr, enum riscv_symbol_type symbol_type)
+ {
+   addr = gen_rtx_HIGH (Pmode, riscv_unspec_address (addr, symbol_type));
+-  return riscv_force_temporary (temp, addr, FALSE);
++  return riscv_force_temporary (temp, addr);
+ }
+ 
+ /* Load an entry from the GOT for a TLS GD access.  */
+@@ -1468,8 +1465,7 @@ static rtx riscv_tls_add_tp_le (rtx dest, rtx base, rtx sym)
+    is guaranteed to be a legitimate address for mode MODE.  */
+ 
+ bool
+-riscv_split_symbol (rtx temp, rtx addr, machine_mode mode, rtx *low_out,
+-		    bool in_splitter)
++riscv_split_symbol (rtx temp, rtx addr, machine_mode mode, rtx *low_out)
+ {
+   enum riscv_symbol_type symbol_type;
+ 
+@@ -1485,7 +1481,7 @@ riscv_split_symbol (rtx temp, rtx addr, machine_mode mode, rtx *low_out,
+       case SYMBOL_ABSOLUTE:
+ 	{
+ 	  rtx high = gen_rtx_HIGH (Pmode, copy_rtx (addr));
+-	  high = riscv_force_temporary (temp, high, in_splitter);
++	  high = riscv_force_temporary (temp, high);
+ 	  *low_out = gen_rtx_LO_SUM (Pmode, high, addr);
+ 	}
+ 	break;
+@@ -1544,9 +1540,8 @@ riscv_add_offset (rtx temp, rtx reg, HOST_WIDE_INT offset)
+ 	 overflow, so we need to force a sign-extension check.  */
+       high = gen_int_mode (CONST_HIGH_PART (offset), Pmode);
+       offset = CONST_LOW_PART (offset);
+-      high = riscv_force_temporary (temp, high, FALSE);
+-      reg = riscv_force_temporary (temp, gen_rtx_PLUS (Pmode, high, reg),
+-				   FALSE);
++      high = riscv_force_temporary (temp, high);
++      reg = riscv_force_temporary (temp, gen_rtx_PLUS (Pmode, high, reg));
+     }
+   return plus_constant (Pmode, reg, offset);
+ }
+@@ -1676,7 +1671,7 @@ riscv_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
+     return riscv_legitimize_tls_address (x);
+ 
+   /* See if the address can split into a high part and a LO_SUM.  */
+-  if (riscv_split_symbol (NULL, x, mode, &addr, FALSE))
++  if (riscv_split_symbol (NULL, x, mode, &addr))
+     return riscv_force_address (addr, mode);
+ 
+   /* Handle BASE + OFFSET.  */
+@@ -1707,24 +1702,19 @@ riscv_legitimize_address (rtx x, rtx oldx ATTRIBUTE_UNUSED,
+ 
+ void
+ riscv_move_integer (rtx temp, rtx dest, HOST_WIDE_INT value,
+-		    machine_mode orig_mode, bool in_splitter)
++		    machine_mode orig_mode)
+ {
+   struct riscv_integer_op codes[RISCV_MAX_INTEGER_OPS];
+   machine_mode mode;
+   int i, num_ops;
+   rtx x;
+ 
+-  /* We can't call gen_reg_rtx from a splitter, because this might realloc
+-     the regno_reg_rtx array, which would invalidate reg rtx pointers in the
+-     combine undo buffer.  */
+-  bool can_create_pseudo = can_create_pseudo_p () && ! in_splitter;
+-
+   mode = GET_MODE (dest);
+   /* We use the original mode for the riscv_build_integer call, because HImode
+      values are given special treatment.  */
+   num_ops = riscv_build_integer (codes, value, orig_mode);
+ 
+-  if (can_create_pseudo && num_ops > 2 /* not a simple constant */
++  if (can_create_pseudo_p () && num_ops > 2 /* not a simple constant */
+       && num_ops >= riscv_split_integer_cost (value))
+     x = riscv_split_integer (value, mode);
+   else
+@@ -1735,7 +1725,7 @@ riscv_move_integer (rtx temp, rtx dest, HOST_WIDE_INT value,
+ 
+       for (i = 1; i < num_ops; i++)
+ 	{
+-	  if (!can_create_pseudo)
++	  if (!can_create_pseudo_p ())
+ 	    x = riscv_emit_set (temp, x);
+ 	  else
+ 	    x = force_reg (mode, x);
+@@ -1759,12 +1749,12 @@ riscv_legitimize_const_move (machine_mode mode, rtx dest, rtx src)
+   /* Split moves of big integers into smaller pieces.  */
+   if (splittable_const_int_operand (src, mode))
+     {
+-      riscv_move_integer (dest, dest, INTVAL (src), mode, FALSE);
++      riscv_move_integer (dest, dest, INTVAL (src), mode);
+       return;
+     }
+ 
+   /* Split moves of symbolic constants into high/low pairs.  */
+-  if (riscv_split_symbol (dest, src, MAX_MACHINE_MODE, &src, FALSE))
++  if (riscv_split_symbol (dest, src, MAX_MACHINE_MODE, &src))
+     {
+       riscv_emit_set (dest, src);
+       return;
+@@ -1785,7 +1775,7 @@ riscv_legitimize_const_move (machine_mode mode, rtx dest, rtx src)
+   if (offset != const0_rtx
+       && (targetm.cannot_force_const_mem (mode, src) || can_create_pseudo_p ()))
+     {
+-      base = riscv_force_temporary (dest, base, FALSE);
++      base = riscv_force_temporary (dest, base);
+       riscv_emit_move (dest, riscv_add_offset (NULL, base, INTVAL (offset)));
+       return;
+     }
+@@ -1794,7 +1784,7 @@ riscv_legitimize_const_move (machine_mode mode, rtx dest, rtx src)
+ 
+   /* When using explicit relocs, constant pool references are sometimes
+      not legitimate addresses.  */
+-  riscv_split_symbol (dest, XEXP (src, 0), mode, &XEXP (src, 0), FALSE);
++  riscv_split_symbol (dest, XEXP (src, 0), mode, &XEXP (src, 0));
+   riscv_emit_move (dest, src);
+ }
+ 
+@@ -2141,7 +2131,7 @@ riscv_legitimize_move (machine_mode mode, rtx dest, rtx src)
+ 	  if (splittable_const_int_operand (src, mode))
+ 	    {
+ 	      reg = gen_reg_rtx (promoted_mode);
+-	      riscv_move_integer (reg, reg, INTVAL (src), mode, FALSE);
++	      riscv_move_integer (reg, reg, INTVAL (src), mode);
+ 	    }
+ 	  else
+ 	    reg = force_reg (promoted_mode, src);
+diff --git a/gcc/config/riscv/riscv.md b/gcc/config/riscv/riscv.md
+index bc384d9aedf1..5425f38c307d 100644
+--- a/gcc/config/riscv/riscv.md
++++ b/gcc/config/riscv/riscv.md
+@@ -1668,7 +1668,7 @@
+   [(const_int 0)]
+ {
+   riscv_move_integer (operands[2], operands[0], INTVAL (operands[1]),
+-		      <GPR:MODE>mode, TRUE);
++		      <GPR:MODE>mode);
+   DONE;
+ })
+ 
+@@ -1677,11 +1677,11 @@
+   [(set (match_operand:P 0 "register_operand")
+ 	(match_operand:P 1))
+    (clobber (match_operand:P 2 "register_operand"))]
+-  "riscv_split_symbol (operands[2], operands[1], MAX_MACHINE_MODE, NULL, TRUE)"
++  "riscv_split_symbol (operands[2], operands[1], MAX_MACHINE_MODE, NULL)"
+   [(set (match_dup 0) (match_dup 3))]
+ {
+   riscv_split_symbol (operands[2], operands[1],
+-		      MAX_MACHINE_MODE, &operands[3], TRUE);
++		      MAX_MACHINE_MODE, &operands[3]);
+ })
+ 
+ ;; Pretend to have the ability to load complex const_int in order to get
+@@ -1698,7 +1698,7 @@
+   [(const_int 0)]
+ {
+   riscv_move_integer (operands[0], operands[0], INTVAL (operands[1]),
+-                      <MODE>mode, TRUE);
++                      <MODE>mode);
+   DONE;
+ })
+ 
+-- 
+2.34.1
+
